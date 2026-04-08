@@ -1,0 +1,30 @@
+# Python 常用忽略
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# 仿真相关大文件（后期会生成很多）
+*.usd
+*.usdc
+*.mjcf
+*.xml.bak
+*.png
+*.jpg
+__pycache__/
+
+# 日志和临时文件
+*.log
+.DS_Store
