@@ -1,0 +1,8 @@
+# 仿真环境基础依赖
+mujoco>=3.2.0
+dm-control>=1.0.0
+numpy
+matplotlib
+tqdm
+hydra-core           # 用于配置管理，后期会用到
+pyyaml
