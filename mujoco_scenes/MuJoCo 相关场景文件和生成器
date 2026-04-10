@@ -1,1 +1,430 @@
+第一部分：基础概念
+#安装mujoco
+!pip install mujoco
+
+# 设置GPU渲染
+from google.colab import files
+import distutils.util
+import os
+import subprocess
+#检查是否有GPU可用
+if subprocess.run('nvidia-smi').returncode:
+  raise RuntimeError(
+      'Cannot communicate with GPU. '
+      'Make sure you are using a GPU Colab runtime. '
+      'Go to the Runtime menu and select Choose runtime type.')
+
+# 添加ICD配置以便glvnd可以找到nvidia.EGL驱动
+# This is usually installed as part of an Nvidia driver package, but the Colab
+# kernel doesn't install its driver via APT, and as a result the ICD is missing.
+# (https://github.com/NVIDIA/libglvnd/blob/master/src/EGL/icd_enumeration.md)
+NVIDIA_ICD_CONFIG_PATH = '/usr/share/glvnd/egl_vendor.d/10_nvidia.json'
+if not os.path.exists(NVIDIA_ICD_CONFIG_PATH):
+  with open(NVIDIA_ICD_CONFIG_PATH, 'w') as f:
+    f.write("""{
+    "file_format_version" : "1.0.0",
+    "ICD" : {
+        "library_path" : "libEGL_nvidia.so.0"
+    }
+}
+""")
+
+# 配置mujoco使用egl渲染后端（需要GPU）
+print('Setting environment variable to use GPU rendering:')
+%env MUJOCO_GL=egl
+
+# Check if installation was succesful.
+try:
+  print('Checking that the installation succeeded:')
+  import mujoco
+  mujoco.MjModel.from_xml_string('<mujoco/>')
+except Exception as e:
+  raise e from RuntimeError(
+      'Something went wrong during installation. Check the shell output above '
+      'for more information.\n'
+      'If using a hosted Colab runtime, make sure you enable GPU acceleration '
+      'by going to the Runtime menu and selecting "Choose runtime type".')
+
+print('Installation successful.')
+
+# Other imports（库） and helper functions（辅助函数）
+import time
+import itertools
+import numpy as np
+
+# Graphics and plotting.（图形，绘图）
+print('Installing mediapy:')
+!command -v ffmpeg >/dev/null || (apt update && apt install -y ffmpeg)
+#安装mediapy（用于显示图像和视频）
+!pip install -q mediapy
+import mediapy as media
+import matplotlib.pyplot as plt
+
+# More legible printing from numpy.
+np.set_printoptions(precision=3, suppress=True, linewidth=100)
+#清除输出
+from IPython.display import clear_output
+#clear_output()
+
+
+
+A simple model：
+xml = """
+<mujoco>
+  <worldbody>
+    <geom name="red_box" type="box" size=".2 .2 .2" rgba="1 0 0 1"/>
+    <geom name="green_sphere" pos=".2 .2 .2" size=".1" rgba="0 1 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+model = mujoco.MjModel.from_xml_string(xml)
+
+#静态model不随时间变化，<mujoco>根元素，<worldbody>世界主体，<geom》几何元素，默认位置[0,0,0]。
+#mjmodel包含几何信息，连接关系，物理关系，视觉属性，rgba对应颜色和透明度
+
+#颜色透明度
+model.geom_rgba
+#数量
+model.ngeom
+#命名
+try:
+  model.geom()
+except KeyError as e:
+  print(e)
+#通过name，访问所有属性*  
+model.geom('green_sphere')
+#通过name，访问单一属性
+model.geom('green_sphere').rgba
+#通过ID访问属性
+id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, 'green_sphere')
+model.geom_rgba[id, :]
+#id，name互查，id=0永远是world
+print('id of "green_sphere": ', model.geom('green_sphere').id)
+print('name of geom 1: ', model.geom(1).name)
+print('name of body 0: ', model.body(0).name)
+#列出所有name，id
+[model.geom(i).name for i in range(model.ngeom)]
+[model.geom(i).id for i in range(model.ngeom)]
+
+#mjData是动态仿真模型:data.time. 广义/关节坐标：data.qpos data.qvel 笛卡尔：data.xpos data.xquat
+
+#创建mjData实例
+data = mujoco.MjData(model)
+#打印位置，不会更新位置
+print(data.geom_xpos)
+
+#调用mujoco.mj_kinematics计算运动学，更新位置
+mujoco.mj_kinematics(model, data)
+#打印正确位置
+print('raw access:\n', data.geom_xpos)
+
+# MjData also supports named access:
+print('\nnamed access:\n', data.geom('green_sphere').xpos)
+
+
+第二部分：渲染、仿真与动画
+
+
+#重新定义模型（保持章节独立性）
+xml = """
+<mujoco>
+  <worldbody>
+    <geom name="red_box" type="box" size=".2 .2 .2" rgba="1 0 0 1"/>
+    <geom name="green_sphere" pos=".2 .2 .2" size=".1" rgba="0 1 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+# Make model and data
+model = mujoco.MjModel.from_xml_string(xml)
+data = mujoco.MjData(model)
+
+# Make renderer, render and show the pixels
+with mujoco.Renderer(model) as renderer:
+  media.show_image(renderer.render())
+#结果显示是黑色的，我们需要先传播mjData的值。mj_forward作用：计算运动学，更新读数，计算加速度,笛卡尔坐标系换算。
+#渲染器持有的mjvScene也需要更新
+with mujoco.Renderer(model) as renderer:
+  mujoco.mj_forward(model, data)
+  
+  renderer.update_scene(data)
+
+  media.show_image(renderer.render())
+
+#添加光源
+xml = """
+<mujoco>
+  <worldbody>
+    <light name="top" pos="0 0 1"/>
+    <geom name="red_box" type="box" size=".2 .2 .2" rgba="1 0 0 1"/>
+    <geom name="green_sphere" pos=".2 .2 .2" size=".1" rgba="0 1 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+#重建模型，数据
+model = mujoco.MjModel.from_xml_string(xml)
+data = mujoco.MjData(model)
+
+with mujoco.Renderer(model) as renderer:
+  mujoco.mj_forward(model, data)
+  renderer.update_scene(data)
+  media.show_image(renderer.render())
+
+
+#随机颜色
+model.geom('red_box').rgba[:3] = np.random.rand(3)
+with mujoco.Renderer(model) as renderer:
+  renderer.update_scene(data)
+
+  media.show_image(renderer.render())
+
+
+#创建物理仿真，时间步长；渲染频率60/30；解耦：物理仿真和视觉渲染是独立的频率可以不同
+
+#仿真参数
+duration = 3.8  # 仿真时长(seconds)
+framerate = 60  # (Hz)
+
+# Simulate and display video.
+frames = [] # 存储视频
+mujoco.mj_resetData(model, data)  # Reset state and time.
+with mujoco.Renderer(model) as renderer:
+  while data.time < duration:
+   #推进一个时间步（default：2ms）
+    mujoco.mj_step(model, data)
+#采样，仿真频率（500hz）是不等于渲染频率（60hz）的
+    if len(frames) < data.time * framerate:
+      renderer.update_scene(data)
+      pixels = renderer.render()
+      frames.append(pixels)
+
+media.show_video(frames, fps=framerate)
+
+
+
+xml = """
+<mujoco>
+  <worldbody>
+    <light name="top" pos="0 0 1"/>
+    <!--定义一个可以旋转的刚体 -->
+    <body name="box_and_sphere" euler="0 0 -30">  <!--初始旋转30° -->
+      <joint name="swing" type="hinge" axis="1 -1 0" pos="-.2 -.2 -.2"/> 
+      <geom name="red_box" type="box" size=".2 .2 .2" rgba="1 0 0 1"/>
+      <geom name="green_sphere" pos=".2 .2 .2" size=".1" rgba="0 1 0 1"/>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+model = mujoco.MjModel.from_xml_string(xml)
+data = mujoco.MjData(model)
+
+# enable joint visualization option:
+scene_option = mujoco.MjvOption()
+scene_option.flags[mujoco.mjtVisFlag.mjVIS_JOINT] = True
+
+duration = 3.8  # (seconds)
+framerate = 60  # (Hz)
+
+# Simulate and display video.
+frames = []
+mujoco.mj_resetData(model, data)
+with mujoco.Renderer(model) as renderer:
+  while data.time < duration:
+    mujoco.mj_step(model, data)
+    if len(frames) < data.time * framerate:
+      renderer.update_scene(data, scene_option=scene_option)
+      pixels = renderer.render()
+      frames.append(pixels)
+
+media.show_video(frames, fps=framerate)
+
+
+
+#物理参数存储在mjModel.opt
+
+
+
+
+tippe_top = """
+<mujoco model="tippe top">
+  <option integrator="RK4"/> #积分器提高精度
+
+  <asset>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3"
+     rgb2=".2 .3 .4" width="300" height="300"/>
+    <material name="grid" texture="grid" texrepeat="8 8" reflectance=".2"/>
+  </asset>
+
+  <worldbody>
+    <geom size=".2 .2 .01" type="plane" material="grid"/>
+    <light pos="0 0 .6"/>
+    <camera name="closeup" pos="0 -.1 .07" xyaxes="1 0 0 0 1 2"/>
+    <body name="top" pos="0 0 .02">
+      <freejoint/>     #有六个自由度
+      <geom name="ball" type="sphere" size=".02" />
+      <geom name="stem" type="cylinder" pos="0 0 .02" size="0.004 .008"/>
+      <geom name="ballast" type="box" size=".023 .023 0.005"  pos="0 0 -.015"
+       contype="0" conaffinity="0" group="3"/>
+    </body>
+  </worldbody>
+
+  <keyframe>
+    <key name="spinning" qpos="0 0 0.02 1 0 0 0" qvel="0 0 0 0 1 200" />
+  </keyframe>
+</mujoco>
+"""
+model = mujoco.MjModel.from_xml_string(tippe_top)
+data = mujoco.MjData(model)
+
+mujoco.mj_forward(model, data)
+with mujoco.Renderer(model) as renderer:
+  renderer.update_scene(data, camera="closeup")
+
+  media.show_image(renderer.render())
+
+
+
+duration = 7    # (seconds)
+framerate = 60  # (Hz)
+
+# Simulate and display video.
+frames = []
+mujoco.mj_resetDataKeyframe(model, data, 0)  # Reset the state to keyframe 0
+with mujoco.Renderer(model) as renderer:
+  while data.time < duration:
+    mujoco.mj_step(model, data)
+    if len(frames) < data.time * framerate:
+      renderer.update_scene(data, "closeup")
+      pixels = renderer.render()
+      frames.append(pixels)
+
+media.show_video(frames, fps=framerate)
+
+
+
+
+
+timevals = []
+angular_velocity = []
+stem_height = []
+
+# Simulate and save data
+mujoco.mj_resetDataKeyframe(model, data, 0)
+while data.time < duration:
+  mujoco.mj_step(model, data)
+  timevals.append(data.time)
+  angular_velocity.append(data.qvel[3:6].copy())
+  stem_height.append(data.geom_xpos[2,2]);
+
+dpi = 120
+width = 600
+height = 800
+figsize = (width / dpi, height / dpi)
+_, ax = plt.subplots(2, 1, figsize=figsize, dpi=dpi, sharex=True)
+
+ax[0].plot(timevals, angular_velocity)
+ax[0].set_title('angular velocity')
+ax[0].set_ylabel('radians / second')
+
+ax[1].plot(timevals, stem_height)
+ax[1].set_xlabel('time (seconds)')
+ax[1].set_ylabel('meters')
+_ = ax[1].set_title('stem height')
+
+
+
+
+chaotic_pendulum = """
+<mujoco>
+  <option timestep=".001">
+    <flag energy="enable" contact="disable"/>
+  </option>
+
+  <default>
+    <joint type="hinge" axis="0 -1 0"/>
+    <geom type="capsule" size=".02"/>
+  </default>
+
+  <worldbody>
+    <light pos="0 -.4 1"/>
+    <camera name="fixed" pos="0 -1 0" xyaxes="1 0 0 0 0 1"/>
+    <body name="0" pos="0 0 .2">
+      <joint name="root"/>
+      <geom fromto="-.2 0 0 .2 0 0" rgba="1 1 0 1"/>
+      <geom fromto="0 0 0 0 0 -.25" rgba="1 1 0 1"/>
+      <body name="1" pos="-.2 0 0">
+        <joint/>
+        <geom fromto="0 0 0 0 0 -.2" rgba="1 0 0 1"/>
+      </body>
+      <body name="2" pos=".2 0 0">
+        <joint/>
+        <geom fromto="0 0 0 0 0 -.2" rgba="0 1 0 1"/>
+      </body>
+      <body name="3" pos="0 0 -.25">
+        <joint/>
+        <geom fromto="0 0 0 0 0 -.2" rgba="0 0 1 1"/>
+      </body>
+    </body>
+  </worldbody>
+</mujoco>
+"""
+model = mujoco.MjModel.from_xml_string(chaotic_pendulum)
+data = mujoco.MjData(model)
+height = 480
+width = 640
+
+with mujoco.Renderer(model, height, width) as renderer:
+  mujoco.mj_forward(model, data)
+  renderer.update_scene(data, camera="fixed")
+
+  media.show_image(renderer.render())
+
+
+
+
+# setup
+n_seconds = 6
+framerate = 30  # Hz
+n_frames = int(n_seconds * framerate)
+frames = []
+height = 240
+width = 320
+
+# set initial state
+mujoco.mj_resetData(model, data)
+data.joint('root').qvel = 10
+
+# simulate and record frames
+frame = 0
+sim_time = 0
+render_time = 0
+n_steps = 0
+with mujoco.Renderer(model, height, width) as renderer:
+  for i in range(n_frames):
+    while data.time * framerate < i:
+      tic = time.time()
+      mujoco.mj_step(model, data)
+      sim_time += time.time() - tic
+      n_steps += 1
+    tic = time.time()
+    renderer.update_scene(data, "fixed")
+    frame = renderer.render()
+    render_time += time.time() - tic
+    frames.append(frame)
+
+# print timing and play video
+step_time = 1e6*sim_time/n_steps
+step_fps = n_steps/sim_time
+print(f'simulation: {step_time:5.3g} μs/step  ({step_fps:5.0f}Hz)')
+frame_time = 1e6*render_time/n_frames
+frame_fps = n_frames/render_time
+print(f'rendering:  {frame_time:5.3g} μs/frame ({frame_fps:5.0f}Hz)')
+print('\n')
+
+# show video
+media.show_video(frames, fps=framerate)
+
+
+
+
+
 
